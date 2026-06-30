@@ -25,8 +25,9 @@ class InferenceEngine(
 
     /**
      * Load a model into memory with the best available delegate.
+     * @param forceDelegate Optional delegate type to force (null for auto-select).
      */
-    suspend fun loadModel(modelId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun loadModel(modelId: String, forceDelegate: DelegateManager.DelegateType? = null): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             if (loadedInterpreters.containsKey(modelId)) {
                 Log.i(TAG, "Model already loaded: $modelId")
@@ -36,7 +37,7 @@ class InferenceEngine(
             val buffer = modelManager.loadModel(modelId)
                 ?: return@withContext Result.failure(Exception("Model not found: $modelId"))
 
-            val interpreter = delegateManager.createInterpreter(buffer)
+            val interpreter = delegateManager.createInterpreter(buffer, forceDelegate)
             loadedInterpreters[modelId] = interpreter
             activeDelegateType[modelId] = delegateManager.activeDelegate
 

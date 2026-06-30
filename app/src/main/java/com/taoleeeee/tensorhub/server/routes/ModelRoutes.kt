@@ -1,5 +1,6 @@
 package com.taoleeeee.tensorhub.server.routes
 
+import com.taoleeeee.tensorhub.delegate.DelegateManager
 import com.taoleeeee.tensorhub.inference.InferenceEngine
 import com.taoleeeee.tensorhub.model.ModelManager
 import fi.iki.elonen.NanoHTTPD
@@ -49,13 +50,20 @@ class ModelRoutes(
         val modelId = body?.get("model")?.jsonPrimitive?.content
             ?: return errorResponse(Response.Status.BAD_REQUEST, "Missing 'model' field")
 
+        val forceDelegate = when (body?.get("delegate")?.jsonPrimitive?.content?.lowercase()) {
+            "nnapi" -> DelegateManager.DelegateType.NNAPI
+            "gpu" -> DelegateManager.DelegateType.GPU
+            "cpu" -> DelegateManager.DelegateType.CPU
+            else -> null  // auto-select
+        }
+
         // Run loading in a blocking way (server thread handles it)
         val result = runBlocking {
             // Download model file if not present
             modelManager.downloadModelIfNeeded(modelId)
             // Download vocab file if needed (e.g., for Whisper tokenizer)
             modelManager.downloadVocabIfNeeded(modelId)
-            inferenceEngine.loadModel(modelId)
+            inferenceEngine.loadModel(modelId, forceDelegate)
         }
 
         return if (result.isSuccess) {
