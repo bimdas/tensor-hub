@@ -53,15 +53,7 @@ class WhisperTranscription(
     private val tokenizer = WhisperTokenizer(vocabFile)
     private var signatureNames: Set<String>? = null
 
-    /** Log available signatures and their tensor names for debugging. */
-    fun logSignatureInfo() {
-        try {
-            val keys = interpreter.signatureKeys
-            Log.i(TAG, "Model signatures: $keys")
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not list signatures: ${e.message}")
-        }
-    }
+
 
     /**
      * Transcribe audio from a WAV file.
@@ -73,9 +65,6 @@ class WhisperTranscription(
     ): Result<TranscriptionResult> = withContext(Dispatchers.Default) {
         try {
             val startTime = System.currentTimeMillis()
-
-            // Log model signature info for debugging
-            logSignatureInfo()
 
             // 1. Decode audio to 16kHz mono float samples
             val samples = AudioDecoder.decode(audioFile).getOrThrow()
@@ -132,8 +121,12 @@ class WhisperTranscription(
             order(ByteOrder.nativeOrder())
         }
 
-        // Run encoder — run() uses the default/first signature (encode)
-        interpreter.run(inputBuffer, outputBuffer)
+        // Run encoder via runSignature(inputs, outputs, signatureName)
+        val encInputs = HashMap<String, Any>()
+        encInputs["input_features"] = inputBuffer
+        val encOutputs = HashMap<String, Any>()
+        encOutputs["last_hidden_state"] = outputBuffer
+        interpreter.runSignature(encInputs, encOutputs, "encode")
 
         Log.d(TAG, "Encoder output ready (${outputSize} bytes)")
         return outputBuffer
@@ -181,51 +174,14 @@ class WhisperTranscription(
                 order(ByteOrder.nativeOrder())
             }
 
-            // Run decoder — access native wrapper's runSignature(String, Map, Map)
-            // Interpreter.runSignature(Map,Map) passes null for signature name
-            // but the underlying NativeInterpreterWrapper.runSignature(String,Map,Map) exists
-            try {
-                val wrapperField = interpreter.javaClass.getDeclaredField("wrapper")
-                wrapperField.isAccessible = true
-                val wrapper = wrapperField.get(interpreter)!!
-
-                val runSigMethod = wrapper.javaClass.getMethod(
-                    "runSignature",
-                    String::class.java,
-                    java.util.Map::class.java,
-                    java.util.Map::class.java
-                )
-
-                if (iteration == 0) {
-                    // Log available methods on wrapper for debugging
-                    val methods = wrapper.javaClass.methods.map { it.name }.distinct().sorted()
-                    Log.i(TAG, "Wrapper methods: ${methods.filter { it.contains("ignature") || it.contains("run") }}")
-                }
-
-                val decInputs = HashMap<String, Any>()
-                decInputs["encoder_output"] = encoderOutput
-                decInputs["decoder_input_ids"] = idsBuffer
-                decInputs["cache"] = cacheBuffer
-                val decOutputs = HashMap<String, Any>()
-                decOutputs["logits"] = logitsBuffer
-
-                runSigMethod.invoke(wrapper, "decode", decInputs, decOutputs)
-            } catch (e: Exception) {
-                if (iteration == 0) {
-                    Log.e(TAG, "Decode signature failed: ${e.javaClass.simpleName}: ${e.message}")
-                    // Dump interpreter class structure for debugging
-                    try {
-                        val fields = interpreter.javaClass.declaredFields.map { "${it.type.simpleName} ${it.name}" }
-                        Log.i(TAG, "Interpreter fields: $fields")
-                        val methods = interpreter.javaClass.declaredMethods.map { "${it.returnType.simpleName} ${it.name}(${it.parameterTypes.joinToString { it.simpleName }})" }
-                        Log.i(TAG, "Interpreter methods: ${methods.filter { it.contains("ignature") || it.contains("run") || it.contains("Runner") }}")
-                    } catch (ex: Exception) {
-                        Log.w(TAG, "Class dump failed: ${ex.message}")
-                    }
-                }
-                throw e
-            }
-
+            // Run decoder — runSignature(inputs, outputs, signatureName)
+            val decInputs = HashMap<String, Any>()
+            decInputs["encoder_output"] = encoderOutput
+            decInputs["decoder_input_ids"] = idsBuffer
+            decInputs["cache"] = cacheBuffer
+            val decOutputs = HashMap<String, Any>()
+            decOutputs["logits"] = logitsBuffer
+            interpreter.runSignature(decInputs, decOutputs, "decode")
             // Greedy: find argmax at the current step position
             // Logits layout: [batch=1, seq=128, vocab=51865]
             // Offset to position `step`: step * VOCAB_SIZE * 4
