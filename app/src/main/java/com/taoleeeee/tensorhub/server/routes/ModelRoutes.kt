@@ -9,7 +9,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 
 /**
- * Handles /v1/models/* endpoints for model management.
+ * Handles /v1/models endpoints for model management.
  */
 class ModelRoutes(
     private val inferenceEngine: InferenceEngine,
