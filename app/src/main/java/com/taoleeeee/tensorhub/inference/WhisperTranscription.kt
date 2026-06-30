@@ -53,6 +53,16 @@ class WhisperTranscription(
     private val tokenizer = WhisperTokenizer(vocabFile)
     private var signatureNames: Set<String>? = null
 
+    /** Log available signatures and their tensor names for debugging. */
+    fun logSignatureInfo() {
+        try {
+            val keys = interpreter.signatureKeys
+            Log.i(TAG, "Model signatures: $keys")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not list signatures: ${e.message}")
+        }
+    }
+
     /**
      * Transcribe audio from a WAV file.
      * Runs on a background thread — safe to call from coroutine context.
@@ -63,6 +73,9 @@ class WhisperTranscription(
     ): Result<TranscriptionResult> = withContext(Dispatchers.Default) {
         try {
             val startTime = System.currentTimeMillis()
+
+            // Log model signature info for debugging
+            logSignatureInfo()
 
             // 1. Decode audio to 16kHz mono float samples
             val samples = AudioDecoder.decode(audioFile).getOrThrow()
@@ -119,8 +132,17 @@ class WhisperTranscription(
             order(ByteOrder.nativeOrder())
         }
 
-        // Run encoder — single input/output, use simple run()
-        interpreter.run(inputBuffer, outputBuffer)
+        // Run encoder — use runSignature for multi-signature model
+        try {
+            val encInputs = HashMap<String, Any>()
+            encInputs["input_features"] = inputBuffer
+            val encOutputs = HashMap<String, Any>()
+            encOutputs["last_hidden_state"] = outputBuffer
+            interpreter.runSignature("encode", encInputs, encOutputs)
+        } catch (e: Exception) {
+            Log.w(TAG, "runSignature encode failed, trying simple run: ${e.message}")
+            interpreter.run(inputBuffer, outputBuffer)
+        }
 
         Log.d(TAG, "Encoder output ready (${outputSize} bytes)")
         return outputBuffer
@@ -168,11 +190,21 @@ class WhisperTranscription(
                 order(ByteOrder.nativeOrder())
             }
 
-            // Run decoder — 3 inputs, 1 output
-            val decInputs = arrayOf<Any>(encoderOutput, idsBuffer, cacheBuffer)
-            val decOutputs = HashMap<Int, Any>()
-            decOutputs[0] = logitsBuffer
-            interpreter.runForMultipleInputsOutputs(decInputs, decOutputs)
+            // Run decoder — use runSignature for decode sub-graph
+            try {
+                val decInputs = HashMap<String, Any>()
+                decInputs["encoder_output"] = encoderOutput
+                decInputs["decoder_input_ids"] = idsBuffer
+                decInputs["cache"] = cacheBuffer
+                val decOutputs = HashMap<String, Any>()
+                decOutputs["logits"] = logitsBuffer
+                interpreter.runSignature("decode", decInputs, decOutputs)
+            } catch (e: Exception) {
+                if (iteration == 0) {
+                    Log.e(TAG, "runSignature decode failed: ${e.message}")
+                }
+                throw e
+            }
 
             // Greedy: find argmax at the current step position
             // Logits layout: [batch=1, seq=128, vocab=51865]
