@@ -19,6 +19,15 @@ fun HomeScreen() {
     var serverRunning by remember { mutableStateOf(false) }
     var port by remember { mutableStateOf("8190") }
 
+    // Auto-start server on first launch
+    LaunchedEffect(Unit) {
+        val intent = Intent(context, InferenceService::class.java)
+        intent.action = InferenceService.ACTION_START
+        intent.putExtra(InferenceService.EXTRA_PORT, port.toIntOrNull() ?: 8190)
+        context.startForegroundService(intent)
+        serverRunning = true
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
