@@ -4,9 +4,7 @@ import com.taoleeeee.tensorhub.inference.InferenceEngine
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import java.io.File
+import kotlinx.serialization.json.*
 
 /**
  * Handles /v1/audio/transcriptions
@@ -16,8 +14,6 @@ import java.io.File
  * Currently returns a placeholder response.
  */
 class AudioRoutes(private val inferenceEngine: InferenceEngine) {
-
-    private val json = Json { prettyPrint = true }
 
     fun handleTranscription(session: IHTTPSession): Response {
         // Parse multipart body
@@ -45,24 +41,20 @@ class AudioRoutes(private val inferenceEngine: InferenceEngine) {
         }
 
         // TODO: Process audio through Whisper pipeline
-        // 1. Decode audio file (WAV/OGG/MP3) to PCM
-        // 2. Resample to 16kHz mono
-        // 3. Compute mel spectrogram
-        // 4. Run encoder + decoder inference
-        // 5. Decode tokens to text
+        val placeholderText = "Transcription placeholder - Whisper pipeline not yet implemented"
 
         val result = when (responseFormat) {
-            "text" -> "Transcription placeholder - Whisper pipeline not yet implemented"
-            "verbose_json" -> json.encodeToString(mapOf(
-                "task" to "transcribe",
-                "language" to language,
-                "duration" to 0.0,
-                "text" to "Transcription placeholder - Whisper pipeline not yet implemented",
-                "segments" to emptyList<Any>()
-            ))
-            else -> json.encodeToString(mapOf(
-                "text" to "Transcription placeholder - Whisper pipeline not yet implemented"
-            ))
+            "text" -> placeholderText
+            "verbose_json" -> buildJsonObject {
+                put("task", "transcribe")
+                put("language", language)
+                put("duration", 0.0)
+                put("text", placeholderText)
+                put("segments", buildJsonArray {})
+            }.toString()
+            else -> buildJsonObject {
+                put("text", placeholderText)
+            }.toString()
         }
 
         val contentType = if (responseFormat == "text") "text/plain" else "application/json"
@@ -70,10 +62,13 @@ class AudioRoutes(private val inferenceEngine: InferenceEngine) {
     }
 
     private fun errorResponse(status: Response.Status, message: String): Response {
+        val errorObj = buildJsonObject {
+            put("error", message)
+        }
         return NanoHTTPD.newFixedLengthResponse(
             status,
             "application/json",
-            json.encodeToString(mapOf("error" to message))
+            errorObj.toString()
         )
     }
 }

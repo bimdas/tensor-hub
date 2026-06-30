@@ -5,9 +5,7 @@ import com.taoleeeee.tensorhub.inference.InferenceEngine
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import org.tensorflow.lite.Interpreter
+import kotlinx.serialization.json.*
 
 /**
  * Handles /v1/embeddings
@@ -29,13 +27,13 @@ class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
 
         // Parse model and input from JSON
         val body = try {
-            json.parseToJsonElement(bodyStr).let { it as? kotlinx.serialization.json.JsonObject }
+            json.parseToJsonElement(bodyStr).let { it as? JsonObject }
         } catch (e: Exception) {
             return errorResponse(Response.Status.BAD_REQUEST, "Invalid JSON body")
         }
 
-        val model = body?.get("model")?.toString()?.trim('"') ?: "bge-small-en-v1.5-q8"
-        val input = body?.get("input")?.toString()?.trim('"')
+        val model = body?.get("model")?.jsonPrimitive?.content ?: "bge-small-en-v1.5-q8"
+        val input = body?.get("input")?.jsonPrimitive?.content
             ?: return errorResponse(Response.Status.BAD_REQUEST, "Missing 'input' field")
 
         // Check model is loaded
@@ -59,20 +57,31 @@ class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
 
         return result.fold(
             onSuccess = { embeddingResult ->
-                val response = json.encodeToString(mapOf(
-                    "object" to "list",
-                    "data" to listOf(mapOf(
-                        "object" to "embedding",
-                        "index" to 0,
-                        "embedding" to embeddingResult.embedding.toList()
-                    )),
-                    "model" to model,
-                    "usage" to mapOf(
-                        "prompt_tokens" to embeddingResult.tokensUsed,
-                        "total_tokens" to embeddingResult.tokensUsed
-                    )
-                ))
-                NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", response)
+                val embeddingArray = buildJsonArray {
+                    embeddingResult.embedding.forEach { add(it) }
+                }
+
+                val response = buildJsonObject {
+                    put("object", "list")
+                    put("data", buildJsonArray {
+                        add(buildJsonObject {
+                            put("object", "embedding")
+                            put("index", 0)
+                            put("embedding", embeddingArray)
+                        })
+                    })
+                    put("model", model)
+                    put("usage", buildJsonObject {
+                        put("prompt_tokens", embeddingResult.tokensUsed)
+                        put("total_tokens", embeddingResult.tokensUsed)
+                    })
+                }
+
+                NanoHTTPD.newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/json",
+                    response.toString()
+                )
             },
             onFailure = { e ->
                 errorResponse(Response.Status.INTERNAL_ERROR, "Embedding failed: ${e.message}")
@@ -81,10 +90,13 @@ class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
     }
 
     private fun errorResponse(status: Response.Status, message: String): Response {
+        val errorObj = buildJsonObject {
+            put("error", message)
+        }
         return NanoHTTPD.newFixedLengthResponse(
             status,
             "application/json",
-            json.encodeToString(mapOf("error" to message))
+            errorObj.toString()
         )
     }
 }

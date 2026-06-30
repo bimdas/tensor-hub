@@ -5,8 +5,8 @@ import com.taoleeeee.tensorhub.model.ModelManager
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.*
 
 /**
  * Handles /v1/models/* endpoints for model management.
@@ -15,24 +15,24 @@ class ModelRoutes(
     private val inferenceEngine: InferenceEngine,
     private val modelManager: ModelManager
 ) {
-    private val json = Json { prettyPrint = true }
-
     fun handleList(): Response {
-        val models = modelManager.listModels().map { model ->
-            mapOf(
-                "id" to model["id"],
-                "object" to "model",
-                "owned_by" to "tensor-hub",
-                "loaded" to inferenceEngine.isLoaded(model["id"] as String)
-            )
+        val models = buildJsonArray {
+            modelManager.listModels().forEach { model ->
+                add(buildJsonObject {
+                    put("id", model["id"].toString())
+                    put("object", "model")
+                    put("owned_by", "tensor-hub")
+                    put("loaded", inferenceEngine.isLoaded(model["id"].toString()))
+                })
+            }
         }
 
-        val body = json.encodeToString(mapOf(
-            "object" to "list",
-            "data" to models
-        ))
+        val body = buildJsonObject {
+            put("object", "list")
+            put("data", models)
+        }
 
-        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", body)
+        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", body.toString())
     }
 
     fun handleLoad(session: IHTTPSession): Response {
@@ -41,26 +41,26 @@ class ModelRoutes(
         val bodyStr = String(bodyBytes)
 
         val body = try {
-            json.parseToJsonElement(bodyStr) as? kotlinx.serialization.json.JsonObject
+            json.parseToJsonElement(bodyStr) as? JsonObject
         } catch (e: Exception) {
             return errorResponse(Response.Status.BAD_REQUEST, "Invalid JSON body")
         }
 
-        val modelId = body?.get("model")?.toString()?.trim('"')
+        val modelId = body?.get("model")?.jsonPrimitive?.content
             ?: return errorResponse(Response.Status.BAD_REQUEST, "Missing 'model' field")
 
         // Run loading in a blocking way (server thread handles it)
-        val result = kotlinx.coroutines.runBlocking {
+        val result = runBlocking {
             inferenceEngine.loadModel(modelId)
         }
 
         return if (result.isSuccess) {
-            val responseBody = json.encodeToString(mapOf(
-                "status" to "ok",
-                "model" to modelId,
-                "delegate" to (inferenceEngine.getDelegateType(modelId)?.name ?: "unknown")
-            ))
-            NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", responseBody)
+            val responseBody = buildJsonObject {
+                put("status", "ok")
+                put("model", modelId)
+                put("delegate", inferenceEngine.getDelegateType(modelId)?.name ?: "unknown")
+            }
+            NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", responseBody.toString())
         } else {
             errorResponse(Response.Status.INTERNAL_ERROR, result.exceptionOrNull()?.message ?: "Load failed")
         }
@@ -72,28 +72,35 @@ class ModelRoutes(
         val bodyStr = String(bodyBytes)
 
         val body = try {
-            json.parseToJsonElement(bodyStr) as? kotlinx.serialization.json.JsonObject
+            json.parseToJsonElement(bodyStr) as? JsonObject
         } catch (e: Exception) {
             return errorResponse(Response.Status.BAD_REQUEST, "Invalid JSON body")
         }
 
-        val modelId = body?.get("model")?.toString()?.trim('"')
+        val modelId = body?.get("model")?.jsonPrimitive?.content
             ?: return errorResponse(Response.Status.BAD_REQUEST, "Missing 'model' field")
 
         inferenceEngine.unloadModel(modelId)
 
-        val responseBody = json.encodeToString(mapOf(
-            "status" to "ok",
-            "model" to modelId
-        ))
-        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", responseBody)
+        val responseBody = buildJsonObject {
+            put("status", "ok")
+            put("model", modelId)
+        }
+        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", responseBody.toString())
+    }
+
+    companion object {
+        private val json = Json { prettyPrint = true }
     }
 
     private fun errorResponse(status: Response.Status, message: String): Response {
+        val errorObj = buildJsonObject {
+            put("error", message)
+        }
         return NanoHTTPD.newFixedLengthResponse(
             status,
             "application/json",
-            json.encodeToString(mapOf("error" to message))
+            errorObj.toString()
         )
     }
 }
