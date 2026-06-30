@@ -144,6 +144,25 @@ class WhisperTranscription(
         interpreter.runSignature(encInputs, encOutputs, "encode")
 
         Log.d(TAG, "Encoder output ready (${outputSize} bytes)")
+
+        // Diagnostic: verify encoder output is not garbage
+        outputBuffer.rewind()
+        var nonZero = 0
+        var nanCount = 0
+        var infCount = 0
+        var sum = 0.0
+        for (i in 0 until ENCODER_SEQ_LEN * ENCODER_DIM) {
+            val v = outputBuffer.float
+            if (v != 0.0f) nonZero++
+            if (v.isNaN()) nanCount++
+            if (v.isInfinite()) infCount++
+            sum += v
+        }
+        outputBuffer.rewind()
+        Log.i(TAG, "Encoder output: ${nonZero}/${ENCODER_SEQ_LEN * ENCODER_DIM} non-zero, " +
+                "nan=$nanCount, inf=$infCount, sum=${"%.2f".format(sum)}, " +
+                "first5=${FloatArray(5).also { arr -> outputBuffer.rewind(); for (i in 0..4) arr[i] = outputBuffer.float; outputBuffer.rewind() }.contentToString()}")
+
         return outputBuffer
     }
 
@@ -187,6 +206,7 @@ class WhisperTranscription(
         var step = sotSequence.size  // position of next token to predict
 
         Log.i(TAG, "SOT sequence: ${sotSequence.contentToString()}, starting at step=$step")
+        Log.i(TAG, "Token IDs first 8: ${tokenIds.take(8)}")
 
         // Output logits buffer: [1, 128, 51865] = 128 * 51865 floats
         val numLogits = DECODER_MAX_TOKENS * VOCAB_SIZE
