@@ -13,8 +13,8 @@ android {
         applicationId = "com.taoleeeee.tensorhub"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         // Only bundle arm64 native libs (Pixel 6 Pro is arm64)
         ndk {
