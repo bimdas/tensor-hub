@@ -36,6 +36,17 @@ class DelegateManager(private val context: Context) {
      * Create an interpreter with the best available delegate.
      */
     fun createInterpreter(model: MappedByteBuffer): Interpreter {
+        return createInterpreter(model, null)
+    }
+
+    /**
+     * Create an interpreter with a specific delegate type (or null for auto).
+     */
+    fun createInterpreter(model: MappedByteBuffer, forceDelegate: DelegateType?): Interpreter {
+        if (forceDelegate != null) {
+            return createWithDelegate(model, forceDelegate)
+        }
+
         val options = Interpreter.Options()
 
         // Try NNAPI first (TPU/GPU on Pixel)
@@ -64,11 +75,35 @@ class DelegateManager(private val context: Context) {
         }
 
         // CPU fallback
-        options.setUseNNAPI(false)
-        val interpreter = Interpreter(model, options)
-        activeDelegate = DelegateType.CPU
-        Log.i(TAG, "Using CPU (no hardware acceleration)")
-        return interpreter
+        return createWithDelegate(model, DelegateType.CPU)
+    }
+
+    private fun createWithDelegate(model: MappedByteBuffer, type: DelegateType): Interpreter {
+        val options = Interpreter.Options()
+        return when (type) {
+            DelegateType.NNAPI -> {
+                options.setUseNNAPI(true)
+                val interpreter = Interpreter(model, options)
+                activeDelegate = DelegateType.NNAPI
+                Log.i(TAG, "Using NNAPI delegate (TPU/GPU)")
+                interpreter
+            }
+            DelegateType.GPU -> {
+                gpuDelegate = GpuDelegate()
+                options.addDelegate(gpuDelegate)
+                val interpreter = Interpreter(model, options)
+                activeDelegate = DelegateType.GPU
+                Log.i(TAG, "Using GPU delegate")
+                interpreter
+            }
+            DelegateType.CPU -> {
+                options.setUseNNAPI(false)
+                val interpreter = Interpreter(model, options)
+                activeDelegate = DelegateType.CPU
+                Log.i(TAG, "Using CPU (no hardware acceleration)")
+                interpreter
+            }
+        }
     }
 
     /**
