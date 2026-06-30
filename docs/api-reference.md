@@ -62,7 +62,7 @@ Content-Type: application/json
 Body:
 ```json
 {
-  "model": "all-MiniLM-L6-v2",
+  "model": "bge-small-en-v1.5-q8",
   "input": "text to embed"
 }
 ```
@@ -78,7 +78,7 @@ Response:
       "embedding": [0.0123, -0.0456, ...]
     }
   ],
-  "model": "all-MiniLM-L6-v2",
+  "model": "bge-small-en-v1.5-q8",
   "usage": { "prompt_tokens": 4, "total_tokens": 4 }
 }
 ```

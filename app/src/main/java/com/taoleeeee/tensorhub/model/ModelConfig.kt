@@ -49,13 +49,13 @@ object ModelRegistry {
             description = "Balanced speed and accuracy"
         ),
         ModelConfig(
-            id = "all-MiniLM-L6-v2",
-            name = "MiniLM L6 v2",
+            id = "bge-small-en-v1.5-q8",
+            name = "BGE Small EN v1.5 (INT8)",
             type = ModelType.EMBEDDING,
-            url = "https://huggingface.co/google/gemma-2b/resolve/main/dummy.tflite",
-            filename = "all-MiniLM-L6-v2-int8.tflite",
-            sizeBytes = 23_000_000,
-            description = "Text embeddings for semantic search"
+            url = "https://huggingface.co/ChristianAzinn/bge-small-en-v1.5-q8-tflite/resolve/main/bge-small-en-v1.5-q8.tflite",
+            filename = "bge-small-en-v1.5-q8.tflite",
+            sizeBytes = 33_000_000,
+            description = "384-dim embeddings with built-in tokenizer, optimized for TFLite"
         )
     )
 

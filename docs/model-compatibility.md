@@ -37,7 +37,7 @@ with open("whisper-base-int8.tflite", "wb") as f:
 
 | Model | Dimensions | INT8 Size | Latency |
 |-------|-----------|-----------|---------|
-| all-MiniLM-L6-v2 | 384 | ~23MB | ~100ms |
+| bge-small-en-v1.5-q8 | 384 | ~33MB | ~100ms |
 | all-mpnet-base-v2 | 768 | ~110MB | ~200ms |
 
 ## Image Classification (Future)

@@ -31,7 +31,7 @@ curl -X POST http://localhost:8190/v1/audio/transcriptions \
 # Test embeddings
 curl -X POST http://localhost:8190/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"model": "all-MiniLM-L6-v2", "input": "hello world"}'
+  -d '{"model": "bge-small-en-v1.5-q8", "input": "hello world"}'
 
 # Health check
 curl http://localhost:8190/health
@@ -55,7 +55,7 @@ curl http://localhost:8190/health
 | Whisper Tiny (INT8) | ~75MB | Fast transcription | ~2-3s |
 | Whisper Base (INT8) | ~141MB | Balanced | ~5-8s |
 | Whisper Small (INT8) | ~466MB | Accurate | ~15-25s |
-| all-MiniLM-L6-v2 | ~23MB | Text embeddings | ~100ms |
+| bge-small-en-v1.5-q8 | ~33MB | Text embeddings | ~100ms |
 
 ## Hardware Acceleration
 

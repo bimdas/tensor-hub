@@ -75,6 +75,12 @@ class InferenceEngine(
     fun getLoadedModels(): Set<String> = loadedInterpreters.keys.toSet()
 
     /**
+     * Get the underlying TFLite interpreter for a model.
+     * Used by specialized inference pipelines (e.g., EmbeddingInference).
+     */
+    fun getInterpreter(modelId: String): Interpreter? = loadedInterpreters[modelId]
+
+    /**
      * Run inference on a loaded model. Input/output shapes depend on the model type.
      */
     fun runInference(modelId: String, input: Any, output: Any): Result<Unit> {

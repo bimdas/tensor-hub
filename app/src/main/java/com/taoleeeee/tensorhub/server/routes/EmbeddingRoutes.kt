@@ -1,21 +1,25 @@
 package com.taoleeeee.tensorhub.server.routes
 
+import com.taoleeeee.tensorhub.inference.EmbeddingInference
 import com.taoleeeee.tensorhub.inference.InferenceEngine
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.tensorflow.lite.Interpreter
 
 /**
  * Handles /v1/embeddings
  * OpenAI-compatible text embedding endpoint.
  *
- * TODO: Wire up actual embedding model inference.
+ * Uses BGE-small-en-v1.5-q8 TFLite model which includes
+ * embedded WordPiece tokenization (no external tokenizer needed).
  */
 class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
 
     private val json = Json { prettyPrint = true }
+    private val embeddingPipelines = mutableMapOf<String, EmbeddingInference>()
 
     fun handleEmbedding(session: IHTTPSession): Response {
         // Read JSON body
@@ -30,7 +34,7 @@ class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
             return errorResponse(Response.Status.BAD_REQUEST, "Invalid JSON body")
         }
 
-        val model = body?.get("model")?.toString()?.trim('"') ?: "all-MiniLM-L6-v2"
+        val model = body?.get("model")?.toString()?.trim('"') ?: "bge-small-en-v1.5-q8"
         val input = body?.get("input")?.toString()?.trim('"')
             ?: return errorResponse(Response.Status.BAD_REQUEST, "Missing 'input' field")
 
@@ -42,29 +46,38 @@ class EmbeddingRoutes(private val inferenceEngine: InferenceEngine) {
             )
         }
 
-        // TODO: Run actual embedding inference
-        // 1. Tokenize input text
-        // 2. Run through embedding model
-        // 3. Return embedding vector
+        // Get or create embedding pipeline
+        val pipeline = embeddingPipelines.getOrPut(model) {
+            // Get interpreter from inference engine
+            val interpreter = inferenceEngine.getInterpreter(model)
+                ?: return errorResponse(Response.Status.INTERNAL_ERROR, "Failed to get interpreter for $model")
+            EmbeddingInference(interpreter)
+        }
 
-        // Placeholder: return dummy embedding
-        val embedding = FloatArray(384) { 0.0f }
+        // Run embedding inference
+        val result = pipeline.embed(input)
 
-        val result = json.encodeToString(mapOf(
-            "object" to "list",
-            "data" to listOf(mapOf(
-                "object" to "embedding",
-                "index" to 0,
-                "embedding" to embedding.toList()
-            )),
-            "model" to model,
-            "usage" to mapOf(
-                "prompt_tokens" to input.split(" ").size,
-                "total_tokens" to input.split(" ").size
-            )
-        ))
-
-        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", result)
+        return result.fold(
+            onSuccess = { embeddingResult ->
+                val response = json.encodeToString(mapOf(
+                    "object" to "list",
+                    "data" to listOf(mapOf(
+                        "object" to "embedding",
+                        "index" to 0,
+                        "embedding" to embeddingResult.embedding.toList()
+                    )),
+                    "model" to model,
+                    "usage" to mapOf(
+                        "prompt_tokens" to embeddingResult.tokensUsed,
+                        "total_tokens" to embeddingResult.tokensUsed
+                    )
+                ))
+                NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json", response)
+            },
+            onFailure = { e ->
+                errorResponse(Response.Status.INTERNAL_ERROR, "Embedding failed: ${e.message}")
+            }
+        )
     }
 
     private fun errorResponse(status: Response.Status, message: String): Response {
