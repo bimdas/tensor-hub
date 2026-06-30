@@ -23,7 +23,7 @@ class HealthRoutes(
         val body = buildJsonObject {
             put("status", "ok")
             put("server", "tensor-hub")
-            put("version", "0.1.0")
+            put("version", com.taoleeeee.tensorhub.BuildConfig.VERSION_NAME)
             put("models_loaded", loadedModels)
         }
 
