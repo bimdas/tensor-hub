@@ -6,10 +6,11 @@ import kotlin.math.*
 /**
  * Computes Whisper-compatible mel spectrograms from raw audio samples.
  *
- * Whisper's preprocessing pipeline:
+ * Whisper's preprocessing pipeline (matching OpenAI Whisper exactly):
  * 1. STFT with n_fft=400, hop_length=160, Hann window
  * 2. Power spectrum (magnitude squared)
- * 3. 80-band mel filterbank (0-8000 Hz)
+ * 3. 80-band mel filterbank (0-8000 Hz) — librosa.filters.mel(sr=16000, n_fft=400, n_mels=80)
+ *    Uses Slaney mel scale (linear < 1kHz, log >= 1kHz) with Slaney normalization
  * 4. Log10 → clamp to max-8.0 → normalize to [-1, 1]
  * 5. Pad/truncate to 3000 frames (30 seconds)
  *
@@ -32,13 +33,12 @@ object MelSpectrogram {
     }
 
     // Precomputed: DFT twiddle factors for n_fft=400, first 201 bins
-    // cos_table[k][n] = cos(2*pi*k*n/400), sin_table[k][n] = sin(2*pi*k*n/400)
-    // Only compute positive frequencies: k = 0..200 (n_fft/2)
     private const val N_FREQ_BINS = N_FFT / 2 + 1  // 201
     private val cosTable: Array<FloatArray>
     private val sinTable: Array<FloatArray>
 
     // Precomputed: mel filterbank matrix [80][201]
+    // Matches librosa.filters.mel(sr=16000, n_fft=400, n_mels=80, fmin=0, fmax=8000, htk=False, norm="slaney")
     private val melFilterbank: Array<FloatArray>
 
     init {
@@ -54,7 +54,7 @@ object MelSpectrogram {
             }
         }
 
-        // Build mel filterbank
+        // Build mel filterbank (Slaney mel scale + Slaney normalization)
         melFilterbank = buildMelFilterbank()
         Log.i(TAG, "Initialized: n_fft=$N_FFT, hop=$HOP_LENGTH, mels=$N_MELS, frames=$N_FRAMES")
     }
@@ -93,7 +93,7 @@ object MelSpectrogram {
             }
         }
 
-        // 4. Log scale + normalize
+        // 4. Log scale + normalize (matching OpenAI Whisper exactly)
         // Find max value for dynamic range compression
         var maxVal = Float.MIN_VALUE
         for (m in 0 until N_MELS) {
@@ -129,10 +129,6 @@ object MelSpectrogram {
     /**
      * Compute power spectrum of a single frame using direct DFT.
      * Returns magnitude squared for positive frequencies (0..200).
-     *
-     * Uses direct DFT (O(n²)) since n_fft=400 is not a power of 2.
-     * With precomputed twiddle factors, this runs in ~80K ops per frame,
-     * ~240M ops total for 30s of audio — acceptable for on-device.
      */
     private fun computePowerSpectrum(frame: FloatArray): FloatArray {
         val power = FloatArray(N_FREQ_BINS)
@@ -152,53 +148,106 @@ object MelSpectrogram {
 
     /**
      * Build 80-band mel filterbank matrix [80][201].
-     * Uses HTK mel scale: mel = 2595 * log10(1 + f/700)
-     * Triangle filters equally spaced in mel frequency domain.
+     *
+     * Uses Slaney mel scale (librosa default, htk=False):
+     *   - Linear below 1000 Hz: mel = f * 3/200
+     *   - Log above 1000 Hz: mel = 15 + ln(f/1000) / ln(6.4)/27
+     *
+     * With Slaney normalization: each filter divided by its bandwidth in Hz.
+     * This matches librosa.filters.mel(sr=16000, n_fft=400, n_mels=80, norm="slaney")
+     * which is what OpenAI Whisper's mel_filters.npz was generated from.
      */
     private fun buildMelFilterbank(): Array<FloatArray> {
-        val melMin = hzToMel(F_MIN)
-        val melMax = hzToMel(F_MAX)
+        // FFT frequency bins: [0, 40, 80, ..., 8000] Hz (201 bins)
+        val fftFreqs = FloatArray(N_FREQ_BINS) { i ->
+            i.toFloat() * SAMPLE_RATE / N_FFT
+        }
 
-        // Center frequencies in Hz for each mel bin (+2 for edges)
+        // Mel-spaced frequencies: n_mels + 2 points from fmin to fmax
+        val melMin = hzToMelSlaney(F_MIN)
+        val melMax = hzToMelSlaney(F_MAX)
         val melPoints = FloatArray(N_MELS + 2) { i ->
             melMin + i * (melMax - melMin) / (N_MELS + 1)
         }
-        val hzPoints = FloatArray(melPoints.size) { melToHz(melPoints[it]) }
+        val hzPoints = FloatArray(melPoints.size) { melToHzSlaney(melPoints[it]) }
 
-        // Convert Hz to FFT bin indices
-        // bin = floor((n_fft + 1) * freq / sample_rate)
-        val binPoints = IntArray(hzPoints.size) { i ->
-            floor((N_FFT + 1).toFloat() * hzPoints[i] / SAMPLE_RATE).toInt()
-                .coerceIn(0, N_FFT / 2)
+        // Find fractional bin positions via linear interpolation (like librosa)
+        val binPositions = FloatArray(hzPoints.size) { i ->
+            interpolate(hzPoints[i], fftFreqs)
         }
 
-        // Build filterbank
+        // Build filterbank using librosa's triangle filter method
+        val fdiff = FloatArray(hzPoints.size - 1) { i ->
+            hzPoints[i + 1] - hzPoints[i]
+        }
+
         val filterbank = Array(N_MELS) { FloatArray(N_FREQ_BINS) }
         for (m in 0 until N_MELS) {
-            val left = binPoints[m]
-            val center = binPoints[m + 1]
-            val right = binPoints[m + 2]
-
-            // Rising slope
-            for (k in left until center) {
-                if (center != left) {
-                    filterbank[m][k] = (k - left).toFloat() / (center - left)
-                }
+            for (k in 0 until N_FREQ_BINS) {
+                val lower = if (fdiff[m] != 0.0f) -(hzPoints[m] - fftFreqs[k]) / fdiff[m] else 0.0f
+                val upper = if (fdiff[m + 1] != 0.0f) (hzPoints[m + 2] - fftFreqs[k]) / fdiff[m + 1] else 0.0f
+                filterbank[m][k] = max(0.0f, min(lower, upper))
             }
-            // Falling slope
-            for (k in center until right) {
-                if (right != center) {
-                    filterbank[m][k] = (right - k).toFloat() / (right - center)
+
+            // Slaney normalization: divide by bandwidth in Hz
+            val bandwidth = hzPoints[m + 2] - hzPoints[m]
+            if (bandwidth > 0.0f) {
+                val normFactor = 2.0f / bandwidth
+                for (k in 0 until N_FREQ_BINS) {
+                    filterbank[m][k] *= normFactor
                 }
             }
         }
+
+        // Diagnostic: log some filter stats
+        val peak0 = filterbank[0].max()
+        val peak79 = filterbank[79].max()
+        Log.i(TAG, "Mel filterbank: Slaney scale, Slaney norm. Peak[0]=${"%.6f".format(peak0)}, Peak[79]=${"%.6f".format(peak79)}")
 
         return filterbank
     }
 
-    /** HTK mel scale: mel = 2595 * log10(1 + f/700) */
-    private fun hzToMel(hz: Float): Float = 2595.0f * log10(1.0f + hz / 700.0f)
+    /**
+     * Linear interpolation: find the position of value in sorted array.
+     * Equivalent to numpy's np.interp(value, xp, fp).
+     */
+    private fun interpolate(value: Float, xp: FloatArray): Float {
+        if (value <= xp[0]) return 0.0f
+        if (value >= xp[xp.size - 1]) return (xp.size - 1).toFloat()
+        for (i in 0 until xp.size - 1) {
+            if (value >= xp[i] && value <= xp[i + 1]) {
+                val frac = (value - xp[i]) / (xp[i + 1] - xp[i])
+                return i + frac
+            }
+        }
+        return (xp.size - 1).toFloat()
+    }
 
-    /** Inverse HTK mel scale: f = 700 * (10^(mel/2595) - 1) */
-    private fun melToHz(mel: Float): Float = 700.0f * (10.0f.pow(mel / 2595.0f) - 1.0f)
+    /**
+     * Slaney mel scale (librosa default, htk=False):
+     * Linear below 1000 Hz: mel = f * 3/200
+     * Log above 1000 Hz: mel = 15 + ln(f/1000) / (ln(6.4)/27)
+     */
+    private fun hzToMelSlaney(hz: Float): Float {
+        val fSp = 200.0f / 3.0f
+        return if (hz < 1000.0f) {
+            hz / fSp
+        } else {
+            15.0f + ln(hz / 1000.0f) / (ln(6.4f) / 27.0f)
+        }
+    }
+
+    /**
+     * Inverse Slaney mel scale:
+     * Below mel=15: f = mel * 200/3
+     * Above mel=15: f = 1000 * exp((mel - 15) * ln(6.4)/27)
+     */
+    private fun melToHzSlaney(mel: Float): Float {
+        val fSp = 200.0f / 3.0f
+        return if (mel < 15.0f) {
+            mel * fSp
+        } else {
+            1000.0f * exp((mel - 15.0f) * (ln(6.4f) / 27.0f))
+        }
+    }
 }
