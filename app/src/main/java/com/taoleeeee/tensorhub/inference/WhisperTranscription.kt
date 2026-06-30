@@ -39,13 +39,9 @@ class WhisperTranscription(
         private const val DECODER_MAX_TOKENS = 128
         private const val VOCAB_SIZE = 51865
 
-        // Whisper special tokens
-        private const val START_OF_TRANSCRIPT_TOKEN = 50258
-        private const val END_OF_TEXT_TOKEN = 50257
-
         // Causal mask values — must match Google's reference implementation
         private const val MASKED_IN = 0.0f
-        private const val MASKED_OUT = -0.7f * Float.MAX_VALUE  // ~-2.4e38, NOT -1e9
+        private const val MASKED_OUT = -0.7f * Float.MAX_VALUE  // ~-2.4e38
     }
 
     data class TranscriptionResult(
@@ -58,6 +54,12 @@ class WhisperTranscription(
 
     private val tokenizer = WhisperTokenizer(vocabFile)
     private var encoderInitialized = false
+
+    // Resolved decode input names — discovered dynamically via tensor dimensionality
+    private var decEncOutputName: String? = null
+    private var decTokenIdsName: String? = null
+    private var decMaskName: String? = null
+    private var decLogitsName: String? = null
 
     /**
      * Transcribe audio from a WAV file.
@@ -125,7 +127,7 @@ class WhisperTranscription(
             order(ByteOrder.nativeOrder())
         }
 
-        // Discover tensor names on first run
+        // Discover tensor names and resolve decode input mapping on first run
         if (!encoderInitialized) {
             val encIn = interpreter.getSignatureInputs("encode")
             val encOut = interpreter.getSignatureOutputs("encode")
@@ -133,6 +135,13 @@ class WhisperTranscription(
             val decIn = interpreter.getSignatureInputs("decode")
             val decOut = interpreter.getSignatureOutputs("decode")
             Log.i(TAG, "Decode inputs: ${decIn.contentToString()}, outputs: ${decOut.contentToString()}")
+
+            // Resolve decode input names by tensor dimensionality
+            // args_0 = encoder output [1,1500,512] (3D → numDim=3)
+            // args_1 = token ids [1,128] (2D → numDim=2)
+            // args_2 = causal mask [1,1,128,128] (4D → numDim=4)
+            resolveDecodeInputNames(decIn)
+            decLogitsName = decOut[0]
             encoderInitialized = true
         }
 
@@ -148,43 +157,83 @@ class WhisperTranscription(
         // Diagnostic: verify encoder output is not garbage
         outputBuffer.rewind()
         var nonZero = 0
-        var nanCount = 0
-        var infCount = 0
         var sum = 0.0
+        val first5 = FloatArray(5)
         for (i in 0 until ENCODER_SEQ_LEN * ENCODER_DIM) {
             val v = outputBuffer.float
             if (v != 0.0f) nonZero++
-            if (v.isNaN()) nanCount++
-            if (v.isInfinite()) infCount++
             sum += v
+            if (i < 5) first5[i] = v
         }
         outputBuffer.rewind()
         Log.i(TAG, "Encoder output: ${nonZero}/${ENCODER_SEQ_LEN * ENCODER_DIM} non-zero, " +
-                "nan=$nanCount, inf=$infCount, sum=${"%.2f".format(sum)}, " +
-                "first5=${FloatArray(5).also { arr -> outputBuffer.rewind(); for (i in 0..4) arr[i] = outputBuffer.float; outputBuffer.rewind() }.contentToString()}")
+                "sum=${"%.4f".format(sum)}, first5=${first5.contentToString()}")
 
         return outputBuffer
     }
 
     /**
-     * Autoregressive decoder loop — follows Google's LiteRT ASR sample + Whisper prompt format.
+     * Dynamically resolve decode signature input names by tensor dimensionality.
+     * Avoids relying on alphabetical sort order of getSignatureInputs().
+     *
+     * Decode inputs:
+     *   - 3D (float32[1,1500,512]) → encoder output
+     *   - 2D (int32[1,128])        → token IDs
+     *   - 4D (float32[1,1,128,128]) → causal mask
+     */
+    private fun resolveDecodeInputNames(inputNames: Array<String>) {
+        for (name in inputNames) {
+            try {
+                val tensor = interpreter.getInputTensorFromSignature(name, "decode")
+                val numDim = tensor.numDimensions()
+                when (numDim) {
+                    3 -> {
+                        decEncOutputName = name
+                        Log.i(TAG, "Decode: encoder output → '$name' (3D: ${tensor.shape().contentToString()})")
+                    }
+                    2 -> {
+                        decTokenIdsName = name
+                        Log.i(TAG, "Decode: token IDs → '$name' (2D: ${tensor.shape().contentToString()})")
+                    }
+                    4 -> {
+                        decMaskName = name
+                        Log.i(TAG, "Decode: causal mask → '$name' (4D: ${tensor.shape().contentToString()})")
+                    }
+                    else -> Log.w(TAG, "Decode: unknown input '$name' (${numDim}D)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot introspect decode input '$name': ${e.message}")
+            }
+        }
+
+        // Fallback: if introspection failed, use alphabetical order
+        if (decEncOutputName == null || decTokenIdsName == null || decMaskName == null) {
+            Log.w(TAG, "Dynamic resolution failed, falling back to alphabetical order")
+            decEncOutputName = inputNames[0]
+            decTokenIdsName = inputNames[1]
+            decMaskName = inputNames[2]
+        }
+
+        Log.i(TAG, "Resolved decode inputs: enc='$decEncOutputName', ids='$decTokenIdsName', mask='$decMaskName'")
+    }
+
+    /**
+     * Autoregressive decoder loop.
      *
      * Decode signature:
      *   inputs:  float32[1,1500,512] (encoder output), int32[1,128] (token ids), float32[1,1,128,128] (causal mask)
      *   outputs: float32[1,128,51865] (logits)
      *
-     * Uses full Whisper SOT prompt: <|startoftranscript|><|en|><|transcribe|><|notimestamps|>
-     * Causal mask uses -0.7f * Float.MAX_VALUE per Google's reference.
-     * Logits read as flat float array, argmax at step * VOCAB_SIZE.
+     * Key fixes:
+     * - Dynamic signature input name resolution via tensor dimensionality
+     * - Logits index: (step - 1) * VOCAB_SIZE — reads prediction for next token after position step-1
+     * - EOT detection: uses tokenizer.isEndOfText() to also catch NOSPEECH (50362)
      */
     private fun decode(encoderOutput: ByteBuffer, language: String): IntArray {
         val sotSequence = tokenizer.buildSotSequence(language)
         val generatedTokens = mutableListOf<Int>()
-        val decInputNames = interpreter.getSignatureInputs("decode")
-        val decOutputNames = interpreter.getSignatureOutputs("decode")
 
         // Build causal mask: lower triangular [1, 1, 128, 128]
-        // Matches Google's reference: MASKED_IN=0.0, MASKED_OUT=-0.7f*MAX_VALUE
         val maskSize = DECODER_MAX_TOKENS * DECODER_MAX_TOKENS
         val causalMask = FloatArray(maskSize) { MASKED_OUT }
         for (r in 0 until DECODER_MAX_TOKENS) {
@@ -206,9 +255,8 @@ class WhisperTranscription(
         var step = sotSequence.size  // position of next token to predict
 
         Log.i(TAG, "SOT sequence: ${sotSequence.contentToString()}, starting at step=$step")
-        Log.i(TAG, "Token IDs first 8: ${tokenIds.take(8)}")
 
-        // Output logits buffer: [1, 128, 51865] = 128 * 51865 floats
+        // Output logits buffer: [1, 128, 51865]
         val numLogits = DECODER_MAX_TOKENS * VOCAB_SIZE
 
         // Autoregressive loop
@@ -225,13 +273,13 @@ class WhisperTranscription(
                 order(ByteOrder.nativeOrder())
             }
 
-            // Run decoder
+            // Run decoder using dynamically resolved input names
             val decInputs = HashMap<String, Any>()
-            decInputs[decInputNames[0]] = encoderOutput
-            decInputs[decInputNames[1]] = idsBuffer
-            decInputs[decInputNames[2]] = maskBuffer
+            decInputs[decEncOutputName!!] = encoderOutput
+            decInputs[decTokenIdsName!!] = idsBuffer
+            decInputs[decMaskName!!] = maskBuffer
             val decOutputs = HashMap<String, Any>()
-            decOutputs[decOutputNames[0]] = logitsBuffer
+            decOutputs[decLogitsName!!] = logitsBuffer
             interpreter.runSignature(decInputs, decOutputs, "decode")
 
             // Read logits as flat float array
@@ -242,9 +290,14 @@ class WhisperTranscription(
                 logits[idx] = logitsBuffer.float
             }
 
-            // Argmax at position `step` (the token we just predicted)
-            val startIndex = step * VOCAB_SIZE
-            val endIndex = (step + 1) * VOCAB_SIZE
+            // FIX: Read logits at (step - 1) — the model predicts the NEXT token
+            // given all tokens up to position step-1. Position step contains padding/zeros,
+            // so reading at step would give predictions for after the padding.
+            val predictPos = step - 1
+            val startIndex = predictPos * VOCAB_SIZE
+            val endIndex = (predictPos + 1) * VOCAB_SIZE
+
+            // Argmax over vocab at this position
             var bestToken = startIndex
             var bestScore = logits[startIndex]
             for (idx in startIndex + 1 until endIndex) {
@@ -253,13 +306,13 @@ class WhisperTranscription(
                     bestToken = idx
                 }
             }
-            val tokenId = bestToken - startIndex  // Convert flat index to token ID
+            val tokenId = bestToken - startIndex
 
-            Log.d(TAG, "Step $iteration (pos=$step): token=$tokenId (score=${"%.2f".format(bestScore)})")
+            Log.d(TAG, "Step $iteration (pos=$step, readAt=$predictPos): token=$tokenId (score=${"%.4f".format(bestScore)})")
 
-            // Check for end of text
-            if (tokenId == END_OF_TEXT_TOKEN) {
-                Log.d(TAG, "EOT at step $iteration")
+            // FIX: Use isEndOfText() to catch both EOT (50257) and NOSPEECH (50362)
+            if (tokenizer.isEndOfText(tokenId)) {
+                Log.d(TAG, "End-of-sequence at step $iteration (token=$tokenId)")
                 break
             }
 
