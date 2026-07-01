@@ -16,7 +16,7 @@ target_include_directories(whisper_native PRIVATE
 # TFLite native library (extracted from AAR, checked into jniLibs)
 # AGP automatically packages jniLibs/ into the APK
 # For CMake linking, we reference the .so directly
-set(TFLITE_SO "${CMAKE_SOURCE_DIR}/../src/main/jniLibs/${ANDROID_ABI}/libtensorflowlite_jni.so")
+set(TFLITE_SO "${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libtensorflowlite_jni.so")
 
 if(EXISTS "${TFLITE_SO}")
     message(STATUS "Using pre-built TFLite: ${TFLITE_SO}")
