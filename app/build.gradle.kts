@@ -36,7 +36,7 @@ android {
     buildFeatures {
         buildConfig = true
         compose = true
-        prefab = true
+        // prefab removed - native build uses extracted .so + headers directly
     }
 
     externalNativeBuild {
@@ -73,7 +73,7 @@ dependencies {
     // LiteRT (TensorFlow Lite successor)
     implementation(libs.litert)
     implementation(libs.litert.gpu)
-    implementation(libs.litert.select.tf.ops)  // Required for Prefab native C++ build
+    // litert-select-tf-ops: not needed - native build uses extracted .so + headers
 
     // HTTP Server
     implementation(libs.nanohttpd)
