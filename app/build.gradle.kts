@@ -35,6 +35,14 @@ android {
 
     buildFeatures {
         buildConfig = true
+        compose = true
+        prefab = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
     }
 
     compileOptions {
@@ -44,10 +52,6 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-    }
-
-    buildFeatures {
-        compose = true
     }
 }
 
