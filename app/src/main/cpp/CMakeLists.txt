@@ -7,15 +7,10 @@ add_library(whisper_native SHARED
     whisper_mel.cpp
 )
 
-# TFLite C API headers (extracted from AAR, checked into repo)
-target_include_directories(whisper_native PRIVATE
-    .
-    tflite_headers
-)
+# Local headers only (tflite_minimal.h + fft.h + whisper_*.h)
+target_include_directories(whisper_native PRIVATE .)
 
 # TFLite native library (extracted from AAR, checked into jniLibs)
-# AGP automatically packages jniLibs/ into the APK
-# For CMake linking, we reference the .so directly
 set(TFLITE_SO "${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libtensorflowlite_jni.so")
 
 if(EXISTS "${TFLITE_SO}")

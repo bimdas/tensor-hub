@@ -3,8 +3,7 @@
 
 #include <string>
 #include <vector>
-#include <tensorflow/lite/c/c_api.h>
-#include <tensorflow/lite/c/c_api_types.h>
+#include "tflite_minimal.h"
 #include "whisper_mel.h"
 
 class WhisperDecoder {
